@@ -1,0 +1,104 @@
+%matplotlib inline
+import pandas as pd
+import scipy.stats as sst
+import scipy.special as scs
+import matplotlib.pyplot as plt
+
+data = pd.read_csv('http://www.helsinki.fi/~ahonkela/teaching/compstats1/gp_data2.txt', sep='\t', header=None)
+x = data.values[:,0]
+y = data.values[:,1]
+
+npr.seed(43)
+
+#function for the rational quadratic covariance matrix
+def K(x, a, l):
+    dx = x[:,None] - x[None,:]
+    return (1 + (dx**2)/(2*a*l))**(-a)
+
+
+#function for log-pdf of the prior gamma distribution
+def gamma_logpdf(x, alpha, beta):
+    return (alpha*np.log(beta) - scs.gammaln(alpha) + (alpha-1) * np.log(x) - beta * x)
+
+#trandform the unbounded parameters
+def gamma_transform(x, a, b):
+    return gamma_logpdf(np.exp(x), a, b) + x
+
+#target distribution
+def target(x, y, sigma_n, sigma_k, a, l):
+    return sst.multivariate_normal.logpdf(y, mean=np.zeros(len(y)), cov=(sigma_k*K(x, a, l) + sigma_n*np.identity(len(x)))) + gamma_transform(sigma_n, 2, 1/2) + gamma_transform(sigma_k, 2, 1/2) + gamma_transform(a, 2, 1/2) + gamma_transform(l, 2, 1/2)
+
+#the metropolis-hastings sampler
+def msampled(x0, n, target, drawproposal):
+    x = x0
+    d = len(x0)
+    accepts = 0
+    lp = target(x)
+    xs = np.zeros([n, d])
+    for i in range(n):
+        x_prop = drawproposal(x)
+        l_prop = target(x_prop)
+        if np.log(npr.rand()) < l_prop - lp:
+            x = x_prop
+            lp = l_prop
+            accepts += 1
+        xs[i] = x
+    print('Acceptance rate:', accepts/n)
+    xs = xs[len(xs)//2:]
+    return xs
+
+w = 0.2
+sample = msampled(np.ones(4), 10000, lambda theta: target(x, y, np.exp(theta[0]), np.exp(theta[1]), np.exp(theta[2]), np.exp(theta[3])), lambda x: x+w*npr.randn(*x.shape))
+
+params = ['sigma_n', 'sigma_k', 'alpha', 'l']
+
+#plotting the marginal posterior distribution of each parameter, as well as the median and 2.5% and 97,5%-quantiles
+for i in range(4):
+    sample_i = np.exp(sample[:,i])
+    print('posterior distribution of', params[i])
+    print('median of', params[i], np.median(sample_i))
+    print('97.5%-quantile of', params[i], np.percentile(sample_i, 97.5))
+    print('2.5%-quantile of', params[i], np.percentile(sample_i, 2.5))
+    plt.hist(sample_i, label=params[i])
+    plt.show()
+
+chains = []
+
+#sample 4 different chains from different starting points sampled from the prior distributions of the parameters
+for i in range(4):
+    chains.append(msampled(np.array([npr.gamma(2, 1/2), npr.gamma(2, 1/2), npr.gamma(2, 1/2), npr.gamma(2, 1/2)]), 10000, lambda theta: target(x, y, np.exp(theta[0]), np.exp(theta[1]), np.exp(theta[2]), np.exp(theta[3])), lambda x: x+w*npr.randn(*x.shape)))
+
+#checking the convergence using the Gelman-Rubin R-statistic    
+def Rhat(theta):
+    n = len(theta[:,0])
+    m = len(theta[0,:])
+    B = 0
+    for j in range(m):
+        thetadotj = np.mean(theta[:,j])
+        thetadots = (1/m)*sum([np.mean(theta[:,j]) for j in range(m)])        
+        B += (thetadotj - thetadots)**2
+    B = n/(m-1) * B
+    W = 0
+    for j in range(m):
+        thetadotj = np.mean(theta[:,j])
+        s2 = 1/(n-1) * sum([(theta[i,j] - thetadotj)**2 for i in range(n)])
+        W += s2
+    W = (1/m)*W
+    var = (n-1)/n * W + (1/n)*B
+    Rhat = np.sqrt(var/W)
+    return Rhat
+
+#the R-statistic is computed for 4 different chains each starting from a different point
+rhats = np.zeros(4)
+for i in range(4):
+    chains_i1 = np.column_stack((chains[0][:,i], chains[1][:,i]))
+    chains_i2 = np.column_stack((chains[2][:,i], chains[3][:,i]))
+    chains_i = np.concatenate((chains_i1, chains_i2), axis = 1)
+    samples1 = chains_i[0:len(chains_i)//2,:]
+    samples2 = chains_i[(len(chains_i)//2):len(chains_i),:]
+    samples0 = np.concatenate((samples1, samples2), axis = 1)
+    rhats[i] = Rhat(samples0)
+
+#the maximum is of the 4 is then taken as the R-statistic. If R < 1.1, then the sampler has converged.    
+print(rhats)
+print(np.amax(rhats))
